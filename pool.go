@@ -6,8 +6,8 @@ import (
 	"errors"
 )
 
-type buildFunction func(interface{}) (interface{}, error)
-type closeFunction func(interface{}) error
+type buildFunction func(map[string]interface{}) (interface{}, error)
+type closeFunction func(interface{}, map[string]interface{}) error
 type Pool struct {
 	conns       chan interface{}
 	build       buildFunction
@@ -15,10 +15,10 @@ type Pool struct {
 	timeoutMs   int
 	poolSize    int
 	mu          sync.Mutex
-	extra       interface{}
+	extra       map[string]interface{}
 } 
 
-func NewConnectionPool(build buildFunction, close closeFunction, timeoutMs int, poolSize int, extra interface{}) (pool *Pool,err error) {
+func NewConnectionPool(build buildFunction, close closeFunction, timeoutMs int, poolSize int, extra map[string]interface{}) (pool *Pool,err error) {
 	pool = &Pool{
 		conns:make(chan interface{},poolSize),
 		build:build,
@@ -45,7 +45,7 @@ func (pool *Pool) Get() (conn interface{}, err error) {
 	if len(pool.conns) != 0 {
 		conn, ok = <-pool.conns
 		pool.mu.Unlock()
-		if ok {
+		if ok && conn !=nil {
 			return
 		} else {
 			return nil, errors.New("[connection pool] Get error,The pool is closed")
@@ -57,7 +57,7 @@ func (pool *Pool) Get() (conn interface{}, err error) {
 
 func (pool *Pool) Put(conn interface{}) (err error) {
 	err = nil
-	if conn == nil {
+	if conn == nil && pool.build != nil {
 		conn, err = pool.build(pool.extra)
 		if err != nil {
 			err = errors.New("[connection pool] Put error,can't build a new conn")
@@ -74,7 +74,7 @@ func (pool *Pool) Put(conn interface{}) (err error) {
 }
 
 func (pool *Pool) Close(conn interface{}) (err error) {
-	err = pool.close(conn)
+	err = pool.close(conn, pool.extra)
 	conn = nil
 	return
 }
@@ -86,10 +86,12 @@ func (pool *Pool) Release() {
 			log.Error("[connection pool] Release error,The pool has been closed")
 		}
 	}()
-	pool.mu.Lock()
-	defer pool.mu.Unlock()
+	pool.build = nil
 	close(pool.conns)
 	for conn := range pool.conns {
-		pool.close(conn)
+		pool.mu.Lock()
+		pool.close(conn, pool.extra)
+		conn = nil
+		pool.mu.Unlock()
 	}
 }
